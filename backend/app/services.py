@@ -131,6 +131,15 @@ def make_purchase_response(db: Session, purchase: Purchase) -> dict:
 
 def message_job_public(db: Session, job: MessageJob) -> dict:
     customer = db.get(Customer, job.customer_id)
+    # Only the authenticated webhook receiver records these delivery facts.
+    delivery_verified = bool(
+        job.delivery_mode == "real_test"
+        and job.channel == "whatsapp_real_test"
+        and job.status == "delivered"
+        and job.delivery_status in {"delivered", "read"}
+        and job.delivered_at is not None
+        and job.provider_message_id
+    )
     return {
         "job_id": job.id,
         "job_type": job.job_type,
@@ -153,6 +162,8 @@ def message_job_public(db: Session, job: MessageJob) -> dict:
         "delivery_status": job.delivery_status,
         "delivery_event_at": iso(job.delivery_event_at),
         "delivery_failure_code": job.delivery_failure_code,
+        "delivery_verified": delivery_verified,
+        "delivery_source": "webhook" if delivery_verified else None,
         "test_notice": (
             "Approved template test only; this is not a production thank-you template."
             if job.delivery_mode == "real_test" else None

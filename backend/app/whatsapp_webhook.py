@@ -21,7 +21,7 @@ _STATUS_RANK = {"sent": 1, "delivered": 2, "read": 3}
 
 def challenge_is_valid(mode: str | None, token: str | None) -> bool:
     secret = os.getenv("WHATSAPP_WEBHOOK_VERIFY_TOKEN", "")
-    return bool(secret and mode == "subscribe" and token is not None and hmac.compare_digest(token, secret))
+    return bool(secret and mode == "subscribe" and token is not None and hmac.compare_digest(token.encode("utf-8"), secret.encode("utf-8")))
 
 
 def signature_is_valid(body: bytes, header: str | None) -> bool:
@@ -37,7 +37,7 @@ def status_events(body: bytes) -> list[tuple[str, str, datetime, str | None]]:
     """Ignore all unrelated or malformed events after signature verification."""
     try:
         payload = json.loads(body)
-    except (ValueError, UnicodeDecodeError):
+    except (ValueError, UnicodeDecodeError, RecursionError):
         return []
     if not isinstance(payload, dict) or payload.get("object") != "whatsapp_business_account":
         return []
@@ -61,7 +61,7 @@ def status_events(body: bytes) -> list[tuple[str, str, datetime, str | None]]:
                 if not isinstance(status, dict):
                     continue
                 message_id, name, raw_time = status.get("id"), status.get("status"), status.get("timestamp")
-                if not isinstance(message_id, str) or not message_id or len(message_id) > 512 or name not in {*_STATUS_RANK, "failed"}:
+                if not isinstance(message_id, str) or not message_id or len(message_id) > 512 or not isinstance(name, str) or name not in {*_STATUS_RANK, "failed"}:
                     continue
                 try:
                     if isinstance(raw_time, bool) or not str(raw_time).isdigit():
@@ -100,6 +100,12 @@ def apply_status_events(db: Session, events: list[tuple[str, str, datetime, str 
             job = matches[0]
             if job.status not in {"accepted", "delivered"} or job.delivery_status == "failed":
                 continue
+            previous_event_at = job.delivery_event_at
+            if previous_event_at is not None:
+                if previous_event_at.tzinfo is None:
+                    previous_event_at = previous_event_at.replace(tzinfo=timezone.utc)
+                if event_at < previous_event_at:
+                    continue
             current_rank = _STATUS_RANK.get(job.delivery_status, 0)
             if name == "failed":
                 if current_rank >= 2 or job.status == "delivered":

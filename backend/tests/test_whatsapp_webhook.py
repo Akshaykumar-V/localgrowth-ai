@@ -195,3 +195,57 @@ def test_safe_local_check_script_uses_webhook_only_listener_without_outbound_htt
     assert "signed POST passed" in output
     assert "fictional-verify-secret" not in output
     assert "fictional-meta-app-secret" not in output
+
+
+def test_non_ascii_verification_token_fails_closed(client, webhook_settings):
+    response = client.get("/api/webhooks/whatsapp", params={
+        "hub.mode": "subscribe", "hub.verify_token": "not-the-token-€", "hub.challenge": "hello",
+    })
+    assert response.status_code == 403
+
+
+@pytest.mark.parametrize("bad_status", [{}, [], ["delivered"]])
+def test_signed_malformed_status_does_not_error_or_mutate(client, purchase_request, webhook_settings, bad_status):
+    job_id = accepted_job(client, purchase_request)
+    assert signed_post(client, callback(status=bad_status)).status_code == 200
+    assert public_job(client, job_id)["status"] == "accepted"
+
+
+def test_older_failure_cannot_overwrite_newer_sent_event(client, purchase_request, webhook_settings):
+    job_id = accepted_job(client, purchase_request)
+    assert signed_post(client, callback(status="sent", timestamp="1793340020")).status_code == 200
+    before = public_job(client, job_id)
+    assert signed_post(client, callback(status="failed", timestamp="1793340000", errors=[{"code": 131026}])).status_code == 200
+    after = public_job(client, job_id)
+    assert after["status"] == "accepted" and after["delivery_status"] == "sent"
+    assert after["state_version"] == before["state_version"]
+
+
+def test_older_event_cannot_move_delivery_timestamp_backwards(client, purchase_request, webhook_settings):
+    job_id = accepted_job(client, purchase_request)
+    assert signed_post(client, callback(status="delivered", timestamp="1793340020")).status_code == 200
+    before = public_job(client, job_id)
+    assert signed_post(client, callback(status="read", timestamp="1793340010")).status_code == 200
+    after = public_job(client, job_id)
+    assert after["delivery_status"] == "delivered"
+    assert after["delivery_event_at"] == before["delivery_event_at"]
+    assert after["state_version"] == before["state_version"]
+
+
+def test_duplicate_provider_ids_are_ambiguous_and_ignored(client, purchase_request, webhook_settings):
+    first = accepted_job(client, purchase_request)
+    second = accepted_job(client, purchase_request)
+    assert signed_post(client, callback(status="delivered")).status_code == 200
+    assert public_job(client, first)["status"] == "accepted"
+    assert public_job(client, second)["status"] == "accepted"
+
+
+def test_webhook_delivery_evidence_is_explicit_and_never_inferred_from_acceptance(client, purchase_request, webhook_settings):
+    job_id = accepted_job(client, purchase_request)
+    accepted = public_job(client, job_id)
+    assert accepted["delivery_verified"] is False and accepted["delivery_source"] is None
+    assert signed_post(client, callback(status="sent")).status_code == 200
+    assert public_job(client, job_id)["delivery_verified"] is False
+    assert signed_post(client, callback(status="delivered", timestamp="1793340010")).status_code == 200
+    delivered = public_job(client, job_id)
+    assert delivered["delivery_verified"] is True and delivered["delivery_source"] == "webhook"
