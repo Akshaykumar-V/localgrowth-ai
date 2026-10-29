@@ -1,23 +1,24 @@
 # LocalGrowth AI API Contract
 
-**Status:** Initial shared contract  
+**Status:** Shared frontend/backend contract  
 **Base path:** `/api`  
-**Stack:** FastAPI + SQLite backend; HTML, CSS, and JavaScript frontend
+**Stack:** Python + FastAPI + SQLite backend; HTML, CSS, and JavaScript frontend
 
-This document defines the first shared frontend/backend contract. Examples are synthetic. All request and response bodies use JSON (`Content-Type: application/json`) unless a response has no body. Timestamps are UTC ISO 8601 strings ending in `Z`.
+This document is the shared contract for the first implementation. Examples are synthetic. Request and response bodies use JSON (`Content-Type: application/json`). Timestamps are UTC ISO 8601 strings ending in `Z`.
 
 ## Conventions
 
-- IDs are opaque resource-prefixed strings whose value contains a UUID (for example, `cus_0192e40a-44a2-7abc-8d0a-123456789abc`). Clients must not parse them or assume sequential IDs.
-- Phone numbers in write requests use E.164 format (for example, `+14155550123`). **Every phone number returned by the API is masked**; the full number is never included in response payloads. The default mask preserves the country code and last two digits: `+1********23`.
-- A purchase request carries two independent permission values: `thank_you` and `marketing`. `thank_you: true` permits a purchase-related thank-you/service message. `marketing: true` records explicit marketing opt-in. Neither permission implies the other. Marketing campaigns may only target customers with `marketing: true`.
-- Campaign preview and simulation are non-delivery operations. `simulate` records synthetic outcomes and must not send real SMS or other messages.
-- Lists use `data` and `pagination`. `limit` defaults to 20 and is capped at 100; `cursor` is an opaque value returned by the preceding page. Omitting `cursor` requests the first page.
-- Unknown fields may be ignored by clients. The backend may reject unknown enum values and malformed fields.
+- IDs are opaque resource-prefixed strings containing UUID values, such as `cus_0192e40a-44a2-7abc-8d0a-123456789abc`. Clients must not parse IDs or assume they are sequential.
+- Phone inputs accept either an Indian 10-digit number (for example, `9876543210`) or `+91` followed by 10 digits. The backend normalizes and stores them in `+91` E.164 form. **Every phone number in every response is masked to expose only its last four digits**, for example `******3210`. Full numbers must never appear in response payloads, including errors.
+- Currency examples use INR. Purchase currency defaults to `INR`; monetary values may be omitted for the initial Quick Sale workflow.
+- `permissions.thank_you` and `permissions.promotional` are independent. Each defaults to `false`. A permission is usable only when the customer made a recorded choice and the recorded value is `true`. An omitted choice remains false and unrecorded; explicitly providing `false` records a decline. Neither permission implies the other.
+- No actual WhatsApp, SMS, or other communication may be transmitted by any endpoint in this contract. Campaign preview and simulation only create synthetic records. The only supported channel label is `whatsapp_simulated`.
+- Lists use `data` and `pagination`. `limit` defaults to 20 and is capped at 100; `cursor` is an opaque value returned by the previous page. Omitting `cursor` requests the first page.
+- Unknown enum values and malformed fields may be rejected. Clients must not depend on error `details` wording.
 
 ## Common error response
 
-All error responses use this shape. `details` is optional and contains field-level validation information when available.
+All errors use this shape. `details` is optional and contains field-level validation information when available. Error messages and details must not include a full phone number.
 
 ```json
 {
@@ -25,9 +26,9 @@ All error responses use this shape. `details` is optional and contains field-lev
     "code": "VALIDATION_ERROR",
     "message": "Request validation failed.",
     "details": [
-      { "field": "purchase.total_amount", "issue": "Must be greater than zero." }
+      { "field": "purchase.items[0].category", "issue": "This field is required." }
     ],
-    "request_id": "req_0192e40a-44a2-7abc-8d0a-123456789abc"
+    "request_id": "req_0192e40a-44a2-7abc-8d0a-123456789aaa"
   }
 }
 ```
@@ -38,26 +39,29 @@ All error responses use this shape. `details` is optional and contains field-lev
 | 401 | `UNAUTHENTICATED` | Authentication is required or invalid. |
 | 403 | `FORBIDDEN` | Caller cannot perform the operation. |
 | 404 | `NOT_FOUND` | Customer, campaign, or other requested resource does not exist. |
-| 409 | `CONFLICT` | Duplicate/idempotency conflict or operation is not valid for the resource's current status. |
+| 409 | `CONFLICT` | Idempotency conflict or operation is invalid for the resource's current status. |
 | 422 | `VALIDATION_ERROR` | A request field failed schema validation. |
 | 500 | `INTERNAL_ERROR` | Unexpected server error. |
+| 503 | `SERVICE_UNAVAILABLE` | Service or database is temporarily unavailable. |
 
-Clients should display `message` where appropriate and use `code` for behavior; they should not depend on `details` wording. Errors must not expose unmasked phone numbers.
+Clients should use the stable `code` for behavior and display `message` where appropriate.
 
-## Shared schemas and enums
+## Shared schemas and statuses
 
-### Permission values
+### Permissions
+
+Purchase requests may omit either permission. Omission defaults to `false` and records no customer choice. Supplying `true` or `false` records the customer's choice and timestamp. Responses expose the recorded value and whether a choice was recorded:
 
 ```json
 {
   "permissions": {
-    "thank_you": true,
-    "marketing": false
+    "thank_you": { "allowed": true, "choice_recorded": true, "recorded_at": "2026-10-29T10:15:00Z" },
+    "promotional": { "allowed": false, "choice_recorded": true, "recorded_at": "2026-10-29T10:15:00Z" }
   }
 }
 ```
 
-Both booleans are required when creating a purchase/customer record. `thank_you` applies only to transactional thank-you/service messages. `marketing` is an explicit opt-in and is required for marketing audience eligibility. A false value is an explicit denial or absence of permission. Permission changes are outside this initial contract.
+If omitted, a permission response is `{ "allowed": false, "choice_recorded": false, "recorded_at": null }`. A thank-you job requires a recorded `thank_you.allowed: true` choice. A promotional campaign recipient requires a recorded `promotional.allowed: true` choice.
 
 ### Campaign status
 
@@ -65,45 +69,66 @@ Both booleans are required when creating a purchase/customer record. `thank_you`
 | --- | --- |
 | `draft` | Created by preview; not approved. |
 | `approved` | Explicitly approved for simulation. |
-| `simulating` | Simulation is being processed. |
-| `simulated` | Simulation completed; no real messages were sent. |
+| `simulating` | Synthetic simulation is being processed. |
+| `simulated` | Simulation completed; nothing was transmitted. |
 | `failed` | Preview or simulation processing failed. |
 
-Allowed lifecycle: `draft` → `approved` → `simulating` → `simulated`; a processing failure may transition to `failed`. Approval is valid only for a `draft`; simulation is valid only for an `approved` campaign.
+Lifecycle: `draft` → `approved` → `simulating` → `simulated`; processing may instead end in `failed`. Approval is valid only for a `draft`; simulation is valid only for an `approved` campaign.
 
 ### Message job status
 
 | Status | Meaning |
 | --- | --- |
-| `queued` | Job is waiting for the simulation worker. |
-| `simulated` | Synthetic delivery outcome was recorded; no message was sent. |
-| `skipped` | Job was not simulated, for example because the customer lacks marketing permission. |
+| `queued` | Waiting for the simulation worker. |
+| `simulated` | A synthetic outcome was recorded; no message was transmitted. |
+| `skipped` | Not simulated, for example because permission was not recorded as granted. |
 | `failed` | Simulation processing failed. |
 
-Jobs have `job_type` `thank_you` or `marketing`. Marketing jobs must be skipped for customers without marketing permission. A thank-you job can only be created when `thank_you` permission is true.
+`job_type` is `thank_you` or `promotional`. `channel` is always `whatsapp_simulated`. Thank-you jobs require recorded thank-you permission; promotional jobs require recorded promotional permission. Thank-you job responses always include `scheduled_at`, an ISO 8601 timestamp. No job represents an actual message transmission.
 
 ## Endpoints
 
+### `GET /api/health`
+
+Return a basic application health status. This endpoint does not include customer data.
+
+**Query parameters:** none.
+
+**`200 OK` response**
+
+```json
+{
+  "data": {
+    "status": "ok",
+    "database": "ok",
+    "checked_at": "2026-10-29T10:16:02Z"
+  }
+}
+```
+
+Possible errors: `500` if the service cannot respond. A database problem may be returned as `503` with the common error body and code `SERVICE_UNAVAILABLE`.
+
 ### `POST /api/purchases`
 
-Record a purchase and its customer details/permissions. The backend creates a customer when needed, stores the purchase, and returns both IDs. The backend may match an existing customer by normalized phone number. The raw phone number is accepted on input and never echoed in the response.
+Record one Quick Sale purchase and its customer details. The initial workflow requires exactly one purchased line item. Its product category is required; item quantity defaults to 1. The backend creates or matches a customer by normalized phone number, stores the purchase, and returns both IDs. A thank-you job may be created only if thank-you permission was explicitly granted. The raw phone number is accepted on input and never echoed in the response.
 
 **Request**
 
 | Field | Type | Required | Notes |
 | --- | --- | --- | --- |
 | `customer.name` | string | yes | Display name, 1–120 characters. |
-| `customer.phone` | string | yes | E.164 phone number. |
-| `permissions.thank_you` | boolean | yes | Transactional thank-you/service permission. |
-| `permissions.marketing` | boolean | yes | Explicit marketing opt-in. |
-| `purchase.total_amount` | number | yes | Positive decimal amount. |
-| `purchase.currency` | string | yes | Three-letter ISO 4217 currency code. |
-| `purchase.items` | array | yes | At least one item. |
-| `purchase.items[].name` | string | yes | Item name. |
-| `purchase.items[].quantity` | integer | yes | Positive whole number. |
-| `purchase.items[].unit_price` | number | yes | Non-negative decimal amount. |
+| `customer.phone` | string | yes | Indian 10-digit number or `+91` E.164 number; normalized to `+91` E.164. |
+| `permissions.thank_you` | boolean | no | Defaults to false. If supplied, records the customer's choice. |
+| `permissions.promotional` | boolean | no | Defaults to false. If supplied, records the customer's choice. |
+| `purchase.total_amount` | number | no | Positive decimal amount when supplied. Optional for Quick Sale. |
+| `purchase.currency` | string | no | ISO 4217 code; defaults to `INR`. |
+| `purchase.items` | array | yes | Exactly one line item initially. |
+| `purchase.items[0].name` | string | yes | Product name. |
+| `purchase.items[0].category` | string | yes | Product category, such as `Sarees`, `Shirts`, or `Kurtis`. |
+| `purchase.items[0].quantity` | integer | no | Positive whole number; defaults to 1. |
+| `purchase.items[0].unit_price` | number | no | Non-negative decimal amount when supplied. |
 | `purchase.purchased_at` | string | no | UTC timestamp; defaults to server time. |
-| `idempotency_key` | string | no | Client-generated key for safe retries. Reuse with a different body returns `409`. |
+| `idempotency_key` | string | no | Client-generated retry key. Reuse with a different body returns `409`. |
 
 **Example request**
 
@@ -112,18 +137,16 @@ Record a purchase and its customer details/permissions. The backend creates a cu
   "idempotency_key": "pos-2026-10-29-000184",
   "customer": {
     "name": "Maya Patel",
-    "phone": "+14155550123"
+    "phone": "9876543210"
   },
   "permissions": {
     "thank_you": true,
-    "marketing": false
+    "promotional": false
   },
   "purchase": {
-    "total_amount": 38.50,
-    "currency": "USD",
+    "currency": "INR",
     "items": [
-      { "name": "Herbal tea", "quantity": 2, "unit_price": 12.00 },
-      { "name": "Ceramic mug", "quantity": 1, "unit_price": 14.50 }
+      { "name": "Indigo cotton saree", "category": "Sarees", "quantity": 1 }
     ],
     "purchased_at": "2026-10-29T10:15:00Z"
   }
@@ -139,23 +162,38 @@ Record a purchase and its customer details/permissions. The backend creates a cu
     "purchase_id": "pur_0192e40a-44a2-7abc-8d0a-123456789abd",
     "customer": {
       "name": "Maya Patel",
-      "phone_masked": "+1********23",
-      "permissions": { "thank_you": true, "marketing": false }
+      "phone_masked": "******3210",
+      "permissions": {
+        "thank_you": { "allowed": true, "choice_recorded": true, "recorded_at": "2026-10-29T10:15:00Z" },
+        "promotional": { "allowed": false, "choice_recorded": true, "recorded_at": "2026-10-29T10:15:00Z" }
+      }
     },
     "purchase": {
-      "total_amount": 38.5,
-      "currency": "USD",
+      "total_amount": null,
+      "currency": "INR",
+      "items": [
+        { "name": "Indigo cotton saree", "category": "Sarees", "quantity": 1, "unit_price": null }
+      ],
       "purchased_at": "2026-10-29T10:15:00Z"
+    },
+    "thank_you_job": {
+      "job_id": "job_0192e40a-44a2-7abc-8d0a-123456789abe",
+      "job_type": "thank_you",
+      "channel": "whatsapp_simulated",
+      "status": "queued",
+      "scheduled_at": "2026-10-29T10:15:00Z"
     }
   }
 }
 ```
 
+`thank_you_job` is `null` when thank-you permission is not recorded as granted. Monetary values omitted in the request are returned as `null`, with currency defaulted to `INR`.
+
 Possible errors: `400`, `401`, `422`, `500`.
 
 ### `GET /api/dashboard`
 
-Return aggregate counts and recent activity for the dashboard. Does not return unmasked contact information.
+Return aggregate counts and recent activity. Phone numbers are masked.
 
 **Query parameters:** none.
 
@@ -166,17 +204,19 @@ Return aggregate counts and recent activity for the dashboard. Does not return u
   "data": {
     "customers_total": 128,
     "purchases_total": 342,
-    "revenue": { "amount": 8472.25, "currency": "USD" },
-    "campaigns": { "draft": 2, "approved": 1, "simulated": 8, "failed": 0 },
+    "purchases_with_amount": 301,
+    "revenue": { "amount": 847225.00, "currency": "INR" },
+    "campaigns": { "draft": 2, "approved": 1, "simulating": 0, "simulated": 8, "failed": 0 },
     "message_jobs": { "queued": 0, "simulated": 41, "skipped": 6, "failed": 1 },
     "recent_purchases": [
       {
         "purchase_id": "pur_0192e40a-44a2-7abc-8d0a-123456789abd",
         "customer_id": "cus_0192e40a-44a2-7abc-8d0a-123456789abc",
         "customer_name": "Maya Patel",
-        "phone_masked": "+1********23",
-        "total_amount": 38.5,
-        "currency": "USD",
+        "phone_masked": "******3210",
+        "category": "Sarees",
+        "total_amount": null,
+        "currency": "INR",
         "purchased_at": "2026-10-29T10:15:00Z"
       }
     ],
@@ -185,13 +225,13 @@ Return aggregate counts and recent activity for the dashboard. Does not return u
 }
 ```
 
-Possible errors: `401`, `500`.
+`revenue` sums only purchases with a known amount; `purchases_with_amount` gives the count included in that sum. Possible errors: `401`, `500`.
 
 ### `GET /api/customers`
 
-List customers. The phone value is always masked. Permission values are returned separately so the frontend can distinguish transactional from marketing eligibility.
+List customers with masked phone numbers and distinct permission records.
 
-**Query parameters:** `limit` (optional integer, default 20, maximum 100), `cursor` (optional opaque string), `search` (optional name or phone search; phone input may be full or partial).
+**Query parameters:** `limit` (optional integer, default 20, maximum 100), `cursor` (optional opaque string), `search` (optional name or phone search; a submitted phone search may be full or partial).
 
 **`200 OK` response**
 
@@ -201,10 +241,13 @@ List customers. The phone value is always masked. Permission values are returned
     {
       "customer_id": "cus_0192e40a-44a2-7abc-8d0a-123456789abc",
       "name": "Maya Patel",
-      "phone_masked": "+1********23",
-      "permissions": { "thank_you": true, "marketing": false },
+      "phone_masked": "******3210",
+      "permissions": {
+        "thank_you": { "allowed": true, "choice_recorded": true, "recorded_at": "2026-10-29T10:15:00Z" },
+        "promotional": { "allowed": false, "choice_recorded": true, "recorded_at": "2026-10-29T10:15:00Z" }
+      },
       "purchases_count": 3,
-      "lifetime_value": { "amount": 86.5, "currency": "USD" },
+      "lifetime_value": { "amount": 8650.00, "currency": "INR" },
       "created_at": "2026-10-12T09:00:00Z"
     }
   ],
@@ -212,13 +255,13 @@ List customers. The phone value is always masked. Permission values are returned
 }
 ```
 
-Possible errors: `401`, `422`, `500`.
+`lifetime_value` sums only purchases with a known amount. Possible errors: `401`, `422`, `500`.
 
 ### `GET /api/jobs`
 
-List message jobs created for thank-you messages or campaign simulations.
+List synthetic thank-you and promotional message jobs. Job records never indicate actual transmission.
 
-**Query parameters:** `limit` (optional integer, default 20, maximum 100), `cursor` (optional opaque string), `status` (optional `queued`, `simulated`, `skipped`, or `failed`), `campaign_id` (optional UUID), `job_type` (optional `thank_you` or `marketing`).
+**Query parameters:** `limit` (optional integer, default 20, maximum 100), `cursor` (optional opaque string), `status` (optional `queued`, `simulated`, `skipped`, or `failed`), `campaign_id` (optional campaign ID), `job_type` (optional `thank_you` or `promotional`).
 
 **`200 OK` response**
 
@@ -227,45 +270,56 @@ List message jobs created for thank-you messages or campaign simulations.
   "data": [
     {
       "job_id": "job_0192e40a-44a2-7abc-8d0a-123456789abe",
-      "job_type": "marketing",
-      "status": "skipped",
+      "job_type": "thank_you",
+      "channel": "whatsapp_simulated",
+      "status": "queued",
       "customer_id": "cus_0192e40a-44a2-7abc-8d0a-123456789abc",
-      "phone_masked": "+1********23",
-      "campaign_id": "cam_0192e40a-44a2-7abc-8d0a-123456789abf",
-      "reason": "marketing_permission_missing",
-      "created_at": "2026-10-29T10:20:00Z",
-      "completed_at": "2026-10-29T10:20:01Z"
+      "phone_masked": "******3210",
+      "purchase_id": "pur_0192e40a-44a2-7abc-8d0a-123456789abd",
+      "campaign_id": null,
+      "scheduled_at": "2026-10-29T10:15:00Z",
+      "reason": null,
+      "created_at": "2026-10-29T10:15:00Z",
+      "completed_at": null
     }
   ],
   "pagination": { "limit": 20, "next_cursor": null }
 }
 ```
 
-Possible errors: `401`, `422`, `500`.
+`scheduled_at` is required for every `thank_you` job. It may be `null` for a promotional job. Possible errors: `401`, `422`, `500`.
 
 ### `POST /api/campaigns/preview`
 
-Create a campaign draft and return an audience/message preview. Only customers whose `marketing` permission is true are eligible. This endpoint does not approve a campaign or send messages.
+Create a campaign draft targeting customers associated with a product category. Preview only counts customers with a recorded promotional opt-in. It does not approve or transmit messages.
 
 **Request**
 
 | Field | Type | Required | Notes |
 | --- | --- | --- | --- |
 | `name` | string | yes | Campaign name, 1–120 characters. |
-| `audience` | object | yes | Audience filters; empty object means all marketing-opted-in customers. |
-| `audience.customer_ids` | array of UUID | no | Restrict to these customers. Permission filter still applies. |
-| `audience.purchased_after` | string | no | Include customers with purchases at/after timestamp. |
-| `message` | string | yes | Message body; 1–1000 characters. |
-| `channel` | string | yes | Initial contract supports `sms`. |
+| `product.name` | string | yes | Product name used for campaign context. |
+| `product.category` | string | yes | Category to match against purchase history, such as `Sarees`, `Shirts`, or `Kurtis`. |
+| `product.available_stock` | integer | yes | Non-negative current stock count. |
+| `product.price` | number | no | Optional non-negative product price in `INR`. |
+| `message` | string | yes | Proposed message, 1–1000 characters. |
+| `channel` | string | yes | Must be `whatsapp_simulated`. No actual messages may be transmitted. |
+
+Matching customers are those with at least one purchase in the requested category and a recorded `promotional.allowed: true` choice. The count is evaluated when preview is created.
 
 **Example request**
 
 ```json
 {
-  "name": "November tea offer",
-  "audience": { "purchased_after": "2026-09-01T00:00:00Z" },
-  "message": "Enjoy 10% off your next tea order this November.",
-  "channel": "sms"
+  "name": "Kurtis in stock",
+  "product": {
+    "name": "Indigo cotton kurti",
+    "category": "Kurtis",
+    "available_stock": 12,
+    "price": 1499.00
+  },
+  "message": "Our Indigo cotton kurti is available. View it in store.",
+  "channel": "whatsapp_simulated"
 }
 ```
 
@@ -276,16 +330,22 @@ Create a campaign draft and return an audience/message preview. Only customers w
   "data": {
     "campaign_id": "cam_0192e40a-44a2-7abc-8d0a-123456789abf",
     "status": "draft",
-    "name": "November tea offer",
-    "channel": "sms",
-    "eligible_customers_count": 17,
-    "excluded_without_marketing_permission_count": 5,
-    "message_preview": "Enjoy 10% off your next tea order this November.",
+    "name": "Kurtis in stock",
+    "product": {
+      "name": "Indigo cotton kurti",
+      "category": "Kurtis",
+      "available_stock": 12,
+      "price": 1499.00,
+      "currency": "INR"
+    },
+    "channel": "whatsapp_simulated",
+    "matching_opted_in_customer_count": 17,
+    "message_preview": "Our Indigo cotton kurti is available. View it in store.",
     "sample_recipients": [
       {
         "customer_id": "cus_0192e40a-44a2-7abc-8d0a-123456789abc",
         "name": "Maya Patel",
-        "phone_masked": "+1********23"
+        "phone_masked": "******3210"
       }
     ],
     "created_at": "2026-10-29T10:18:00Z"
@@ -293,11 +353,11 @@ Create a campaign draft and return an audience/message preview. Only customers w
 }
 ```
 
-Possible errors: `400`, `401`, `422`, `500`.
+If `product.price` is omitted, response `price` is `null`; product `currency` remains `INR`. Possible errors: `400`, `401`, `422`, `500`.
 
 ### `POST /api/campaigns/{id}/approve`
 
-Approve a draft campaign so that it can be simulated. This records approval and does not send messages. `{id}` is the `campaign_id` from preview.
+Approve a draft campaign for simulation. This records approval only; it does not send or schedule a real message. `{id}` is the `campaign_id` returned by preview.
 
 **Request:** empty body.
 
@@ -317,7 +377,7 @@ Possible errors: `401`, `404`, `409` (campaign is not in `draft`), `500`.
 
 ### `POST /api/campaigns/{id}/simulate`
 
-Simulate campaign processing for eligible marketing recipients. Simulation never performs real delivery. `{id}` is the `campaign_id`.
+Run synthetic WhatsApp campaign simulation for matching, promotional-opted-in recipients. This endpoint and the simulation worker must never transmit an actual WhatsApp, SMS, or other message. `{id}` is the `campaign_id`.
 
 **Request**
 
@@ -325,7 +385,7 @@ Simulate campaign processing for eligible marketing recipients. Simulation never
 { "outcome_mode": "deterministic" }
 ```
 
-`outcome_mode` is optional and currently supports only `deterministic`; omitted is equivalent. The backend may assign synthetic `simulated`, `skipped`, or `failed` job outcomes. Customers without marketing permission must be `skipped` and must not be marked as sent.
+The body may be empty; `outcome_mode` is optional and currently supports only `deterministic`.
 
 **`202 Accepted` response**
 
@@ -334,14 +394,17 @@ Simulate campaign processing for eligible marketing recipients. Simulation never
   "data": {
     "campaign_id": "cam_0192e40a-44a2-7abc-8d0a-123456789abf",
     "status": "simulating",
+    "channel": "whatsapp_simulated",
     "jobs_created": 17,
     "jobs": [
       {
-        "job_id": "job_0192e40a-44a2-7abc-8d0a-123456789abe",
+        "job_id": "job_0192e40a-44a2-7abc-8d0a-123456789ac0",
         "customer_id": "cus_0192e40a-44a2-7abc-8d0a-123456789abc",
-        "phone_masked": "+1********23",
-        "job_type": "marketing",
-        "status": "queued"
+        "phone_masked": "******3210",
+        "job_type": "promotional",
+        "channel": "whatsapp_simulated",
+        "status": "queued",
+        "scheduled_at": null
       }
     ],
     "started_at": "2026-10-29T10:20:00Z"
@@ -349,14 +412,16 @@ Simulate campaign processing for eligible marketing recipients. Simulation never
 }
 ```
 
-The caller can poll `GET /api/jobs` and `GET /api/dashboard` for job/campaign progress. When complete, jobs have terminal status `simulated`, `skipped`, or `failed` and the campaign status is `simulated` or `failed`.
+`jobs_created` equals the `matching_opted_in_customer_count` evaluated again at simulation time; consent is rechecked before each synthetic job is created. The caller can poll `GET /api/jobs` and `GET /api/dashboard` for progress. On completion, jobs have terminal status `simulated`, `skipped`, or `failed`; campaign status is `simulated` or `failed`. Nothing is transmitted.
 
 Possible errors: `400`, `401`, `404`, `409` (campaign is not `approved` or is already processing), `422`, `500`.
 
 ## Implementation notes for both clients
 
-- Treat `customer_id`, `purchase_id`, `campaign_id`, and `job_id` as opaque strings and retain them when navigating between views.
-- Do not render a phone number from local request state as if it were API-confirmed; responses contain only `phone_masked`.
-- Keep the two permission flags separate in storage and UI. Marketing preview must exclude customers where `permissions.marketing` is false, regardless of `permissions.thank_you`.
-- All monetary values are decimal amounts paired with a currency. Clients should display currency and amount together.
-- This is the initial contract. Changes to field names, enums, or lifecycle behavior should be coordinated between frontend and backend and reflected here.
+- Treat `customer_id`, `purchase_id`, `campaign_id`, and `job_id` as opaque strings.
+- Never display or log a full phone number from a response; the API only returns `phone_masked`, showing the final four digits.
+- Keep `thank_you` and `promotional` choices separate, default each to false, and do not treat a missing choice as recorded consent. Only a recorded `true` choice permits the corresponding job.
+- Quick Sale starts with exactly one line item; its category is required while price and total amount are optional. Currency defaults to INR.
+- Campaign matching uses product category and customers with recorded promotional opt-in. Stock and optional price are returned as campaign context.
+- The only supported communication channel is `whatsapp_simulated`; no endpoint may send a real message.
+- Coordinate changes to field names, enums, or lifecycle behavior between frontend and backend and update this document with them.
