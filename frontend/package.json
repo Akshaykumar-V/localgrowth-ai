@@ -1,1 +1,1 @@
-{"name":"localgrowth-frontend","private":true,"type":"module","scripts":{"start":"node server.js","check":"node --check app.js && node --check api.js && node --check mock.js && node --test tests/*.test.js"}}
+{"name":"localgrowth-frontend","private":true,"type":"module","scripts":{"start":"node server.js","check":"node --check app.js && node --check api.js && node --check integration.js && node --check mock.js && node --check server.js && node --test tests/*.test.js"}}

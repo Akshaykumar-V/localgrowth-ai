@@ -4,6 +4,7 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 const root=path.dirname(fileURLToPath(import.meta.url));
 const types={'.html':'text/html','.css':'text/css','.js':'text/javascript','.svg':'image/svg+xml'};
+const port=Number(process.env.PORT)||5173;
 http.createServer(async(req,res)=>{
   const url=new URL(req.url,'http://localhost');
   if(url.pathname.startsWith('/api/')){
@@ -14,4 +15,4 @@ http.createServer(async(req,res)=>{
   const file=path.resolve(root,'.'+decodeURIComponent(url.pathname==='/'?'/index.html':url.pathname));
   if(!file.startsWith(root+path.sep)){res.writeHead(403);return res.end();}
   try{const body=await readFile(file);res.writeHead(200,{'Content-Type':types[path.extname(file)]||'text/plain','Cache-Control':'no-store'});res.end(body);}catch{res.writeHead(404);res.end('Not found');}
-}).listen(Number(process.env.PORT)||5173,'127.0.0.1',()=>console.log('LocalGrowth AI: http://localhost:5173'));
+}).listen(port,'127.0.0.1',()=>console.log(`LocalGrowth AI: http://localhost:${port}`));
