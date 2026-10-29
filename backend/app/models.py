@@ -109,3 +109,28 @@ class MessageJob(Base):
     scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    delivery_mode: Mapped[str] = mapped_column(String(20), default="simulation", server_default="simulation", nullable=False)
+    state_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    processing_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    provider_message_id: Mapped[str | None] = mapped_column(String(512), nullable=True, index=True)
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    delivery_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    delivery_event_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    delivery_failure_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+
+class WhatsAppDeliveryAttempt(Base):
+    """Permanent reservation: one provider attempt per logical purchase notification."""
+    __tablename__ = "whatsapp_delivery_attempts"
+
+    id: Mapped[str] = mapped_column(String(48), primary_key=True, default=lambda: new_id("att"))
+    dedupe_key: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    job_id: Mapped[str] = mapped_column(ForeignKey("message_jobs.id"), unique=True, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    reason: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    provider_message_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    template_name: Mapped[str] = mapped_column(String(512), nullable=False)
+    language_code: Mapped[str] = mapped_column(String(12), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

@@ -134,7 +134,7 @@ def message_job_public(db: Session, job: MessageJob) -> dict:
     return {
         "job_id": job.id,
         "job_type": job.job_type,
-        "channel": CHANNEL,
+        "channel": job.channel,
         "status": job.status,
         "customer_id": job.customer_id,
         "phone_masked": phone_mask_for(customer),
@@ -144,6 +144,19 @@ def message_job_public(db: Session, job: MessageJob) -> dict:
         "reason": job.reason,
         "created_at": iso(job.created_at),
         "completed_at": iso(job.completed_at),
+        "delivery_mode": job.delivery_mode,
+        "state_version": job.state_version,
+        "provider_message_id": job.provider_message_id,
+        "processing_started_at": iso(job.processing_started_at),
+        "accepted_at": iso(job.accepted_at),
+        "delivered_at": iso(job.delivered_at),
+        "delivery_status": job.delivery_status,
+        "delivery_event_at": iso(job.delivery_event_at),
+        "delivery_failure_code": job.delivery_failure_code,
+        "test_notice": (
+            "Approved template test only; this is not a production thank-you template."
+            if job.delivery_mode == "real_test" else None
+        ),
     }
 
 
@@ -174,40 +187,7 @@ def eligible_campaign_customers(db: Session, campaign_or_category: Campaign | st
     return list(db.scalars(query))
 
 
-def process_queued_jobs(db: Session, now: datetime | None = None) -> int:
-    now = now or utcnow()
-    jobs = list(
-        db.scalars(
-            select(MessageJob).where(
-                MessageJob.status == "queued",
-                ((MessageJob.job_type == "thank_you") & (MessageJob.scheduled_at <= now))
-                | ((MessageJob.job_type == "promotional") & (MessageJob.scheduled_at.is_(None))),
-            )
-        )
-    )
-    campaigns_to_check: set[str] = set()
-    for job in jobs:
-        if not has_permission(db, job.customer_id, job.job_type):
-            job.status = "skipped"
-            job.reason = f"{job.job_type}_permission_missing"
-        else:
-            # Synthetic completion only. No messaging provider is configured or called.
-            job.status = "simulated"
-            job.reason = None
-        job.completed_at = now
-        if job.campaign_id:
-            campaigns_to_check.add(job.campaign_id)
-    for campaign_id in campaigns_to_check:
-        campaign = db.get(Campaign, campaign_id)
-        remaining = db.scalar(
-            select(func.count()).select_from(MessageJob).where(
-                MessageJob.campaign_id == campaign_id,
-                MessageJob.status.in_(("queued",)),
-            )
-        )
-        if campaign and not remaining:
-            campaign.status = "simulated"
-            campaign.completed_at = now
-    if jobs:
-        db.commit()
-    return len(jobs)
+def process_queued_jobs(db: Session, now: datetime | None = None, *, sender=None) -> int:
+    # Keep the existing worker entry point for callers and simulation tests.
+    from .job_worker import process_queued_jobs as process
+    return process(db, now, sender=sender)

@@ -93,6 +93,8 @@ class CreatePurchaseRequest(StrictModel):
     permissions: PermissionInput = Field(default_factory=PermissionInput)
     purchase: PurchaseInput
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=160)
+    # Internal test guard: an explicitly requested real test must never silently simulate.
+    delivery_mode: Literal["simulation", "real_test"] | None = None
 
     @field_validator("idempotency_key")
     @classmethod

@@ -3,6 +3,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+import httpx
 from fastapi.testclient import TestClient
 
 
@@ -13,13 +14,29 @@ os.environ["PHONE_LOOKUP_SECRET"] = "test-only-fake-secret-not-for-local-use-000
 os.environ["THANK_YOU_DELAY_SECONDS"] = "420"
 os.environ["PROMOTIONAL_SUPPRESSION_HOURS"] = "168"
 os.environ["JOB_WORKER_ENABLED"] = "false"
+os.environ["WHATSAPP_AUTOMATION_ENABLED"] = "false"
+os.environ["WHATSAPP_AUTOMATION_MODE"] = "simulation"
+os.environ["WHATSAPP_AUTOMATION_PURCHASE_KEY"] = ""
 
 from app.db import Base, engine  # noqa: E402
 from app.main import app  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
+def safe_test_environment(monkeypatch):
+    monkeypatch.setenv("WHATSAPP_AUTOMATION_ENABLED", "false")
+    monkeypatch.setenv("WHATSAPP_AUTOMATION_MODE", "simulation")
+    monkeypatch.setenv("WHATSAPP_AUTOMATION_PURCHASE_KEY", "")
+
+    def block_network(*_args, **_kwargs):
+        raise AssertionError("Real HTTP is disabled in tests; use MockTransport.")
+
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", block_network)
+
+
+@pytest.fixture(autouse=True)
 def clean_database():
+    assert Path(engine.url.database).resolve() == _db_path.resolve(), "Refusing to reset a non-test database."
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
     yield

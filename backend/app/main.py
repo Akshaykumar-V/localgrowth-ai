@@ -18,6 +18,9 @@ from sqlalchemy.orm import Session
 from . import config  # noqa: F401
 from .db import Base, SessionLocal, engine, get_db
 from .models import Campaign, Customer, MessageJob, Permission, Purchase, PurchaseItem, utcnow
+from .migrate import migrate_database
+from .job_worker import (JOB_STATES, REAL_TEST_CHANNEL, TEST_TEMPLATE_LABEL, delivery_mode_for_purchase,
+                         real_test_enabled, validate_real_test_purchase)
 from .schemas import CampaignPreviewRequest, CreatePurchaseRequest, SimulationRequest
 from .security import encrypt_phone, phone_lookup_hash, validate_secrets
 from .services import (
@@ -36,11 +39,13 @@ from .services import (
     process_queued_jobs,
     purchase_fingerprint,
 )
+from .webhook_routes import router as whatsapp_webhook_router
 
 
 # The customer search endpoint accepts phone digits in its query string. Disable
 # Uvicorn's default access logger so request URLs cannot leak those digits.
 logging.getLogger("uvicorn.access").disabled = True
+logger = logging.getLogger("uvicorn.error")
 
 
 _worker_stop = threading.Event()
@@ -53,9 +58,9 @@ def _worker_loop() -> None:
         try:
             with SessionLocal() as db:
                 process_queued_jobs(db)
-        except Exception:
-            # Keep the durable worker alive; never log database values or customer data.
-            pass
+        except Exception as exc:
+            # Do not log exception text: provider or database errors can contain secrets.
+            logger.error("Background worker iteration failed (%s); no automatic send retry.", type(exc).__name__)
         _worker_stop.wait(interval)
 
 
@@ -63,9 +68,15 @@ def _worker_loop() -> None:
 async def lifespan(_app: FastAPI):
     global _worker_thread
     validate_secrets()
-    Base.metadata.create_all(bind=engine)
+    migrate_database(engine)
     _worker_stop.clear()
-    if os.getenv("JOB_WORKER_ENABLED", "true").lower() not in {"0", "false", "no"}:
+    worker_enabled = os.getenv("JOB_WORKER_ENABLED", "true").lower() not in {"0", "false", "no"}
+    configured_mode = os.getenv("WHATSAPP_AUTOMATION_MODE", "simulation").strip().lower()
+    safe_mode = configured_mode if configured_mode in {"simulation", "real_test"} else "invalid"
+    logger.info("Job worker startup: pid=%s worker_enabled=%s automation_mode=%s real_test_enabled=%s test_key_configured=%s",
+                os.getpid(), worker_enabled, safe_mode, real_test_enabled(),
+                bool(os.getenv("WHATSAPP_AUTOMATION_PURCHASE_KEY", "").strip()))
+    if worker_enabled:
         _worker_thread = threading.Thread(target=_worker_loop, name="localgrowth-job-worker", daemon=True)
         _worker_thread.start()
     try:
@@ -78,6 +89,7 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="LocalGrowth AI Backend", version="0.1.0", lifespan=lifespan)
+app.include_router(whatsapp_webhook_router)
 
 
 def _request_id() -> str:
@@ -108,6 +120,7 @@ async def http_error_handler(_request: Request, exc: HTTPException):
         403: "FORBIDDEN",
         404: "NOT_FOUND",
         409: "CONFLICT",
+        413: "PAYLOAD_TOO_LARGE",
         422: "VALIDATION_ERROR",
         500: "INTERNAL_ERROR",
         503: "SERVICE_UNAVAILABLE",
@@ -173,7 +186,10 @@ def health(db: Session = Depends(get_db)):
 @app.post("/api/purchases", status_code=201)
 def create_purchase(body: CreatePurchaseRequest, db: Session = Depends(get_db)):
     phone = body.customer.phone
-    fingerprint_data = body.model_dump(mode="json", exclude={"idempotency_key"})
+    # Preserve fingerprints for requests created before the explicit test guard existed.
+    fingerprint_data = body.model_dump(mode="json", exclude={"idempotency_key", "delivery_mode"})
+    if body.delivery_mode is not None:
+        fingerprint_data["delivery_mode"] = body.delivery_mode
     fingerprint = purchase_fingerprint(fingerprint_data)
     if body.idempotency_key:
         existing = db.scalar(select(Purchase).where(Purchase.idempotency_key == body.idempotency_key))
@@ -181,6 +197,11 @@ def create_purchase(body: CreatePurchaseRequest, db: Session = Depends(get_db)):
             if existing.request_fingerprint != fingerprint:
                 raise HTTPException(status_code=409, detail="Idempotency key was already used with a different request.")
             return {"data": make_purchase_response(db, existing)}
+
+    if body.delivery_mode == "real_test":
+        reason = validate_real_test_purchase(body.idempotency_key, phone, body.permissions.thank_you)
+        if reason:
+            raise HTTPException(status_code=409, detail=f"Real-test request rejected: {reason}.")
 
     now = utcnow()
     try:
@@ -224,13 +245,15 @@ def create_purchase(body: CreatePurchaseRequest, db: Session = Depends(get_db)):
         if has_permission(db, customer.id, "thank_you"):
             delay = max(0, int(os.getenv("THANK_YOU_DELAY_SECONDS", "420")))
             scheduled_at = now + timedelta(seconds=delay)
+            delivery_mode = body.delivery_mode or delivery_mode_for_purchase(body.idempotency_key)
             thank_you_job = MessageJob(
                 job_type="thank_you",
-                channel=CHANNEL,
+                channel=REAL_TEST_CHANNEL if delivery_mode == "real_test" else CHANNEL,
+                delivery_mode=delivery_mode,
                 status="queued",
                 customer_id=customer.id,
                 purchase_id=purchase.id,
-                message_body=build_thank_you_message(customer, item),
+                message_body=TEST_TEMPLATE_LABEL if delivery_mode == "real_test" else build_thank_you_message(customer, item),
                 scheduled_at=scheduled_at,
                 created_at=now,
             )
@@ -263,7 +286,7 @@ def dashboard(db: Session = Depends(get_db)):
     }
     jobs = {
         status: db.scalar(select(func.count()).select_from(MessageJob).where(MessageJob.status == status)) or 0
-        for status in ("queued", "simulated", "skipped", "failed")
+        for status in JOB_STATES
     }
     rows = db.execute(
         select(Purchase, Customer)
@@ -344,7 +367,7 @@ def customers(
 def jobs(
     limit: int = Query(default=20, ge=1, le=100),
     cursor: str | None = None,
-    status: str | None = Query(default=None, pattern="^(queued|simulated|skipped|failed)$"),
+    status: str | None = Query(default=None, pattern="^(queued|processing|accepted|simulated|delivered|failed|skipped)$"),
     campaign_id: str | None = None,
     job_type: str | None = Query(default=None, pattern="^(thank_you|promotional)$"),
     db: Session = Depends(get_db),
