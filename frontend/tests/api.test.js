@@ -43,3 +43,18 @@ test('pagination stops when API mode changes so results cannot mix sources', asy
     assert.equal(calls, 1);
   } finally { setMode('live'); }
 });
+
+test('jobs monitoring can cancel a live request without adding unsupported status filters', async () => {
+  const previous = globalThis.fetch;
+  let receivedSignal;
+  globalThis.fetch = async (path, options) => {
+    assert.equal(path, '/api/jobs?limit=100'); receivedSignal = options.signal;
+    return new Promise((resolve, reject) => options.signal.addEventListener('abort', () => reject(options.signal.reason), {once: true}));
+  };
+  try {
+    const controller = new AbortController();
+    const pending = api.jobs({limit: 100}, {signal: controller.signal});
+    controller.abort();
+    await assert.rejects(pending); assert(receivedSignal.aborted);
+  } finally { globalThis.fetch = previous; }
+});

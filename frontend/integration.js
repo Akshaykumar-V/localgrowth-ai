@@ -7,7 +7,7 @@ export function money(amount, currency = 'INR') {
 
 export const allowed = (permissions, kind) => permissions?.[kind]?.allowed === true;
 // Never fall back to a request's phone or an unmasked API value.
-export const maskedPhone = value => typeof value === 'string' && value.includes('*') ? value : 'Number hidden';
+export const maskedPhone = value => typeof value === 'string' && /^(?:\+\d{1,3})?\*{4,}\d{2,4}$/.test(value) ? value : 'Number hidden';
 
 function optionalAmount(form, field, minimum) {
   const value = String(form.get(field) ?? '').trim();

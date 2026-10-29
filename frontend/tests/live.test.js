@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {purchasePayload, campaignPayload, allowed, maskedPhone, money} from '../integration.js';
+import {jobCardHTML, jobCounts, campaignResultsHTML} from '../monitoring.js';
 
 // Opt in only against the isolated backend launched by demo_backend.py.
 const base = process.env.LOCALGROWTH_TEST_API;
@@ -20,6 +21,8 @@ test('real FastAPI integration through frontend proxy: purchase, consent, maskin
   assert.equal(allowed(purchase.customer.permissions, 'promotional'), true);
   assert.equal(allowed(purchase.customer.permissions, 'thank_you'), true);
   assert.equal(purchase.thank_you_job.channel, 'whatsapp_simulated'); assert(purchase.thank_you_job.scheduled_at);
+  assert.match(jobCardHTML(purchase.thank_you_job), /Scheduled:.*IST/);
+  assert.match(jobCardHTML(purchase.thank_you_job), /Scheduled/);
   assert.equal((await request('POST', '/api/purchases', sale, 201)).purchase_id, purchase.purchase_id);
   await request('POST', '/api/purchases', {...sale, purchase: {...sale.purchase, total_amount: 1}}, 409);
   const repeat = purchasePayload(form({name: 'Synthetic Integration', phone: '+91' + phone, product: 'Cotton shirt', category, amount: '1499.50', thank_you: 'on', promotional: 'on'}), crypto.randomUUID());
@@ -43,6 +46,9 @@ test('real FastAPI integration through frontend proxy: purchase, consent, maskin
     await new Promise(resolve => setTimeout(resolve, 100));
   }
   assert.equal(jobs[0].status, 'simulated'); assert.equal(jobs[0].job_type, 'promotional');
+  const counts = jobCounts(jobs);
+  assert.equal(counts.simulated, 1); assert.equal(counts.accepted, 0); assert.equal(counts.delivered, 0);
+  assert.match(campaignResultsHTML({...preview, ...simulation}, {jobs}), /Simulated only/);
   assert(!JSON.stringify(jobs).includes(phone));
   assert.equal((await request('POST', '/api/campaigns/preview', payload, 201)).matching_opted_in_customer_count, 0);
   const deny = purchasePayload(form({name: 'Synthetic Integration', phone, product: 'Cotton shirt', category}), crypto.randomUUID());
