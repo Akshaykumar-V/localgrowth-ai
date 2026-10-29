@@ -1,4 +1,5 @@
 // Backend app/schemas.py and services.py define these payloads and response values.
+import {storeName} from './demo.js';
 export function money(amount, currency = 'INR') {
   if (amount === null || amount === undefined || amount === '') return 'Not recorded';
   return new Intl.NumberFormat('en-IN', {style: 'currency', currency, minimumFractionDigits: 2}).format(Number(amount));
@@ -47,7 +48,7 @@ export function campaignPayload(form) {
   return {
     name: `New stock: ${name}`.slice(0, 120),
     product: {name, category, available_stock: Number(stock), ...(price === undefined ? {} : {price})},
-    message: 'Visit Kaveri General Store to discover your next favourite.',
+    message: `Visit ${storeName} to find your next favourite outfit.`,
     channel: 'whatsapp_simulated',
   };
 }

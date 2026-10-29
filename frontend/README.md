@@ -2,6 +2,8 @@
 
 Vanilla HTML/CSS/JavaScript, preserving the original Home, Quick Sale, Customers and Automation screens. Requires Node.js 22 or later; no build or npm install step.
 
+The demo is for independent clothing retailers, using the fictional **Kaveri Fashion** store. Quick Sale and new-stock campaigns share these categories: Sarees, Shirts, T-Shirts, Kurtis, Dresses, Jeans, Ethnic Wear, Kidswear and Other Clothing. Offline sample purchases and campaign examples use clothing only.
+
 ## Run against FastAPI
 
 Start the backend using [its setup instructions](../backend/README.md), then in a separate PowerShell terminal:
@@ -48,7 +50,7 @@ $env:LOCALGROWTH_TEST_API = "http://127.0.0.1:5174"
 npm run check
 ```
 
-The live test writes only synthetic records with a fresh test customer and category each run. `demo_backend.py` generates temporary secrets and a temporary SQLite database, and uses a two-second thank-you delay. The regular backend keeps its configured delay.
+The live test writes only synthetic clothing purchases with a fresh test customer each run. `demo_backend.py` generates temporary secrets and a temporary SQLite database, and uses a two-second thank-you delay. The regular backend keeps its configured delay.
 
 ## Integration notes and limits
 

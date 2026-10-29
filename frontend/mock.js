@@ -1,5 +1,6 @@
 // Offline transport mirroring backend/app/{schemas,main,services}.py.
 // Only masked phones and one-way lookup hashes are retained in memory.
+import {categories} from './demo.js';
 const now = () => new Date().toISOString();
 const id = prefix => `${prefix}_${crypto.randomUUID()}`;
 const channel = 'whatsapp_simulated';
@@ -11,8 +12,8 @@ const digest = async value => Array.from(new Uint8Array(await crypto.subtle.dige
 export function createMock() {
   const customers = names.map((name, i) => ({customer_id: id('cus'), name, phone_masked: `******${3210 + i}`, permissions: {thank_you: consent(true, true), promotional: consent(i % 3 !== 1, true)}, purchases_count: 0, lifetime_value: {amount: 0, currency: 'INR'}, created_at: now()}));
   const purchases = customers.flatMap((c, i) => Array.from({length: 3 + i}, (_, n) => {
-    c.purchases_count++; c.lifetime_value.amount += 180 + i * 65;
-    return {purchase_id: id('pur'), customer_id: c.customer_id, customer_name: c.name, phone_masked: c.phone_masked, category: i % 2 ? 'Snacks' : 'Beverages', total_amount: 180 + i * 65, currency: 'INR', purchased_at: new Date(Date.now() - (n * 6 + i) * 1800000).toISOString()};
+    c.purchases_count++; c.lifetime_value.amount += 1499 + i * 250;
+    return {purchase_id: id('pur'), customer_id: c.customer_id, customer_name: c.name, phone_masked: c.phone_masked, category: categories[i], total_amount: 1499 + i * 250, currency: 'INR', purchased_at: new Date(Date.now() - (n * 6 + i) * 1800000).toISOString()};
   })).sort((a, b) => b.purchased_at.localeCompare(a.purchased_at));
   const makeJob = (c, type, purchase_id = null, campaign_id = null) => ({job_id: id('job'), job_type: type, channel, status: 'queued', customer_id: c.customer_id, phone_masked: c.phone_masked, purchase_id, campaign_id, scheduled_at: type === 'thank_you' ? new Date(Date.now() + 420000).toISOString() : null, reason: null, created_at: now(), completed_at: null});
   const jobs = customers.slice(0, 3).map(c => makeJob(c, 'thank_you', purchases.find(p => p.customer_id === c.customer_id).purchase_id));

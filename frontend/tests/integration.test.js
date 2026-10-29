@@ -18,8 +18,8 @@ test('stock form sends backend product and simulated channel, with no browser au
   const payload = campaignPayload(form({product: 'Blue kurti', category: 'Kurtis', stock: '4', price: '1599'}));
   assert.deepEqual(payload.product, {name: 'Blue kurti', category: 'Kurtis', available_stock: 4, price: 1599});
   assert.equal(payload.channel, 'whatsapp_simulated'); assert(!('audience' in payload));
-  assert(!('price' in campaignPayload(form({product: 'Tea', category: 'Beverages', stock: '0'})).product));
-  assert.throws(() => campaignPayload(form({product: 'Tea', category: 'Beverages', stock: '1.5'})));
+  assert(!('price' in campaignPayload(form({product: 'Cotton shirt', category: 'Shirts', stock: '0'})).product));
+  assert.throws(() => campaignPayload(form({product: 'Cotton shirt', category: 'Shirts', stock: '1.5'})));
 });
 
 test('backend permission objects with allowed false are not treated as truthy opt-ins', () => {

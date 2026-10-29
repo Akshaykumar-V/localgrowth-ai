@@ -13,7 +13,7 @@ test('central client defaults to live, retains purchase payload/key, and uses ba
     return new Response(JSON.stringify({data: {status: 'approved'}}), {headers: {'Content-Type': 'application/json'}});
   };
   try {
-    const body = {idempotency_key: 'retry-same', customer: {name: 'Synthetic', phone: '9876543210'}, permissions: {thank_you: false, promotional: true}, purchase: {items: [{name: 'Tea', category: 'Beverages'}]}};
+    const body = {idempotency_key: 'retry-same', customer: {name: 'Synthetic', phone: '9876543210'}, permissions: {thank_you: false, promotional: true}, purchase: {items: [{name: 'Cotton shirt', category: 'Shirts'}]}};
     await api.purchase(body); await api.purchase(body);
     assert.equal(calls[0].options.body, calls[1].options.body);
     assert.deepEqual(JSON.parse(calls[0].options.body), body);

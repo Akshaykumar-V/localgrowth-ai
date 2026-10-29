@@ -3,14 +3,14 @@ import assert from 'node:assert/strict';
 import {createMock} from '../mock.js';
 import {allowed, money, purchasePayload, campaignPayload} from '../integration.js';
 
-const sale = (thank_you = false, promotional = false) => ({idempotency_key: crypto.randomUUID(), customer: {name: 'Test Customer', phone: '9999888877'}, permissions: {thank_you, promotional}, purchase: {currency: 'INR', items: [{name: 'Tea', category: 'Test tea', quantity: 1}]}});
-const preview = () => ({name: 'New tea', product: {name: 'Assam tea', category: 'Test tea', available_stock: 4, price: 125.5}, message: 'Visit us this week.', channel: 'whatsapp_simulated'});
+const sale = (thank_you = false, promotional = false) => ({idempotency_key: crypto.randomUUID(), customer: {name: 'Test Customer', phone: '9999888877'}, permissions: {thank_you, promotional}, purchase: {currency: 'INR', items: [{name: 'Cotton shirt', category: 'Kidswear', quantity: 1}]}});
+const preview = () => ({name: 'New kidswear', product: {name: 'Cotton kidswear set', category: 'Kidswear', available_stock: 4, price: 125.5}, message: 'Visit us this week.', channel: 'whatsapp_simulated'});
 
 test('optional amount purchase has backend response shape, separate consent objects and masked phone', async () => {
   const request = createMock(), body = sale(false, true), {data} = await request('POST', '/api/purchases', body);
   assert.deepEqual(Object.keys(data).sort(), ['customer', 'customer_id', 'purchase', 'purchase_id', 'thank_you_job']);
   assert.equal(data.customer.phone_masked, '******8877'); assert.equal(data.purchase.total_amount, null);
-  assert.deepEqual(data.purchase.items, [{name: 'Tea', category: 'Test tea', quantity: 1, unit_price: null}]);
+  assert.deepEqual(data.purchase.items, [{name: 'Cotton shirt', category: 'Kidswear', quantity: 1, unit_price: null}]);
   assert.equal(allowed(data.customer.permissions, 'thank_you'), false);
   assert.equal(allowed(data.customer.permissions, 'promotional'), true);
   assert.equal(data.customer.permissions.promotional.choice_recorded, true);
@@ -46,7 +46,7 @@ test('category matching and suppression are transport-side; approval is required
   const request = createMock();
   await request('POST', '/api/purchases', sale(false, true));
   const denied = sale(true, false); denied.customer.phone = '9999888878'; await request('POST', '/api/purchases', denied);
-  const other = sale(false, true); other.customer.phone = '9999888879'; other.purchase.items[0].category = 'Other'; await request('POST', '/api/purchases', other);
+  const other = sale(false, true); other.customer.phone = '9999888879'; other.purchase.items[0].category = 'Other Clothing'; await request('POST', '/api/purchases', other);
   const draft = (await request('POST', '/api/campaigns/preview', preview())).data;
   assert.equal(draft.matching_opted_in_customer_count, 1);
   assert.equal(draft.product.currency, 'INR'); assert.equal(draft.channel, 'whatsapp_simulated');
@@ -69,7 +69,7 @@ test('empty campaigns complete without jobs; pagination, null values and validat
   const request = createMock(), first = await request('GET', '/api/customers?limit=2');
   const second = await request('GET', '/api/customers?limit=2&cursor=' + encodeURIComponent(first.pagination.next_cursor));
   assert.equal(first.pagination.limit, 2); assert.notEqual(first.data[0].customer_id, second.data[0].customer_id);
-  const p = preview(); p.product.category = 'No matches'; delete p.product.price;
+  const p = preview(); p.product.category = 'Ethnic Wear'; delete p.product.price;
   const draft = (await request('POST', '/api/campaigns/preview', p)).data;
   assert.equal(draft.product.price, null); assert.equal(draft.matching_opted_in_customer_count, 0);
   await request('POST', `/api/campaigns/${draft.campaign_id}/approve`);
@@ -80,9 +80,9 @@ test('empty campaigns complete without jobs; pagination, null values and validat
 
 test('real form payload builders work against the offline backend transport', async () => {
   const request = createMock(), form = new FormData();
-  for (const [key, value] of Object.entries({name: 'Demo', phone: '9876543210', product: 'Soap', category: 'Personal care', promotional: 'on'})) form.set(key, value);
+  for (const [key, value] of Object.entries({name: 'Demo', phone: '9876543210', product: 'Cotton kidswear set', category: 'Kidswear', promotional: 'on'})) form.set(key, value);
   await request('POST', '/api/purchases', purchasePayload(form, 'demo-form-1'));
   const stock = new FormData();
-  for (const [key, value] of Object.entries({product: 'Soap', category: 'Personal care', stock: '12'})) stock.set(key, value);
+  for (const [key, value] of Object.entries({product: 'Cotton kidswear set', category: 'Kidswear', stock: '12'})) stock.set(key, value);
   assert.equal((await request('POST', '/api/campaigns/preview', campaignPayload(stock))).data.matching_opted_in_customer_count, 1);
 });
